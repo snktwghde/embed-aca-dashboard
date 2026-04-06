@@ -81,7 +81,7 @@ export default function Shell({ children, user, tenantId, role }) {
 
         {/* User info */}
         <div className="px-4 py-4 border-t border-stone-800">
-          <p className="text-xs text-stone-500 truncate">{user}</p>
+          <p className="text-xs text-stone-500 truncate">{user?.email}</p>
           <p className="text-[10px] uppercase tracking-wider text-stone-600 mt-0.5">
             {role || "user"}
           </p>
