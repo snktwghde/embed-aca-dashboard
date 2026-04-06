@@ -2,14 +2,14 @@
 
 import { useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
-import { createBrowserClient } from "@/lib/supabase-browser";
+import { createClient } from "@/lib/supabase-browser";
 
 export default function Shell({ children, user, tenantId, role }) {
   const router = useRouter();
   const pathname = usePathname();
   const [signingOut, setSigningOut] = useState(false);
 
-  const supabase = createBrowserClient();
+  const supabase = createClient();
 
   const handleSignOut = async () => {
     setSigningOut(true);

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { createBrowserClient } from "@/lib/supabase-browser";
+import { createClient }
 
 const PAGE_SIZE = 20;
 
@@ -76,7 +76,7 @@ function ConfidencePill({ score, level }) {
 
 export default function InvoicesPage() {
   const router = useRouter();
-  const supabase = createBrowserClient();
+  const supabase = createClient();
 
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);

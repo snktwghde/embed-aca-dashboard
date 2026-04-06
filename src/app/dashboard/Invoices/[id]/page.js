@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter, useParams } from "next/navigation";
-import { createBrowserClient } from "@/lib/supabase-browser";
+import { createClient }
 
 function formatCurrency(amount) {
   if (amount == null) return "—";
@@ -68,7 +68,7 @@ export default function InvoiceDetailPage() {
   const router = useRouter();
   const params = useParams();
   const invoiceId = params.id;
-  const supabase = createBrowserClient();
+  const supabase = createClient();
 
   const [invoice, setInvoice] = useState(null);
   const [vendorScore, setVendorScore] = useState(null);
