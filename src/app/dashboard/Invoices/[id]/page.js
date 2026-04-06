@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter, useParams } from "next/navigation";
-import { createClient }
+import { createClient } from "@/lib/supabase-browser";
 
 function formatCurrency(amount) {
   if (amount == null) return "—";

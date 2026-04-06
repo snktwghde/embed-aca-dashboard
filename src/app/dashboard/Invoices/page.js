@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { createClient }
+import { createClient } from "@/lib/supabase-browser";
 
 const PAGE_SIZE = 20;
 
