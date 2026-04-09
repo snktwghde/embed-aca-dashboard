@@ -20,7 +20,7 @@ export default function Shell({ children, user, tenantId, role }) {
   const nav = [
     { label: "Overview", href: "/dashboard", icon: "📊" },
     { label: "Invoices", href: "/dashboard/invoices", icon: "📄" },
-    { label: "Vendors", href: "/dashboard/vendors", icon: "🏢", soon: true },
+    { label: "Vendors", href: "/dashboard/vendors", icon: "🏢" },
     { label: "Rules", href: "/dashboard/rules", icon: "⚙️", soon: true },
     { label: "Audit", href: "/dashboard/audit", icon: "📋", soon: true },
   ];
