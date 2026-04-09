@@ -28,6 +28,12 @@ const formatPercent = (num) => {
   return `${Number(num).toFixed(0)}%`;
 };
 
+// For values stored as 0-1 ratios (e.g. vendor_scores.invoice_accuracy, dispute_rate)
+const formatRatio = (num) => {
+  if (num === null || num === undefined) return "—";
+  return `${(Number(num) * 100).toFixed(0)}%`;
+};
+
 const reliabilityBand = (score) => {
   const s = Number(score) || 0;
   if (s >= 75) return { label: "High Reliability", tone: "emerald" };
@@ -198,7 +204,7 @@ export default function VendorDetailPage() {
         <StatCard label="Rejected" value={vendor.total_rejected ?? 0} mono tone="red" />
         <StatCard label="Paid" value={vendor.total_paid ?? 0} mono />
         <StatCard label="Avg Amount" value={formatCurrency(vendor.avg_amount)} mono />
-        <StatCard label="Dispute Rate" value={formatPercent(vendor.dispute_rate)} mono />
+        <StatCard label="Dispute Rate" value={formatRatio(vendor.dispute_rate)} mono />
       </div>
 
       {/* Secondary metrics */}
@@ -206,7 +212,7 @@ export default function VendorDetailPage() {
         <div className="border border-stone-200 bg-white rounded-lg px-5 py-4">
           <p className="text-[11px] uppercase tracking-wider text-stone-500">Invoice Accuracy</p>
           <p className="text-xl font-mono font-semibold text-stone-900 mt-1">
-            {formatPercent(vendor.invoice_accuracy)}
+            {formatRatio(vendor.invoice_accuracy)}
           </p>
           <p className="text-xs text-stone-500 mt-1">
             How often extracted data matched the actual invoice.

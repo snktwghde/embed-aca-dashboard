@@ -30,6 +30,12 @@ const formatPercent = (num) => {
   return `${Number(num).toFixed(0)}%`;
 };
 
+// For values stored as 0-1 ratios (e.g. vendor_scores.invoice_accuracy, dispute_rate)
+const formatRatio = (num) => {
+  if (num === null || num === undefined) return "—";
+  return `${(Number(num) * 100).toFixed(0)}%`;
+};
+
 // Reliability band: derive color/label from score 0-100
 const reliabilityBand = (score) => {
   const s = Number(score) || 0;
@@ -270,7 +276,7 @@ export default function VendorsListPage() {
                   <td className="px-4 py-3 text-right text-sm text-stone-700 font-mono">{v.total_approved ?? 0}</td>
                   <td className="px-4 py-3 text-right text-sm text-stone-700 font-mono">{v.total_rejected ?? 0}</td>
                   <td className="px-4 py-3 text-right text-sm text-stone-700 font-mono">{formatCurrency(v.avg_amount)}</td>
-                  <td className="px-4 py-3 text-right text-sm text-stone-700 font-mono">{formatPercent(v.dispute_rate)}</td>
+                  <td className="px-4 py-3 text-right text-sm text-stone-700 font-mono">{formatRatio(v.dispute_rate)}</td>
                   <td className="px-4 py-3 text-right text-xs text-stone-500">{formatDate(v.last_updated)}</td>
                 </tr>
               );
