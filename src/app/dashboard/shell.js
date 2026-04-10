@@ -21,7 +21,7 @@ export default function Shell({ children, user, tenantId, role }) {
     { label: "Overview", href: "/dashboard", icon: "📊" },
     { label: "Invoices", href: "/dashboard/invoices", icon: "📄" },
     { label: "Vendors", href: "/dashboard/vendors", icon: "🏢" },
-    { label: "Rules", href: "/dashboard/rules", icon: "⚙️", soon: true },
+    { label: "Rules", href: "/dashboard/rules", icon: "⚙️" },
     { label: "Audit", href: "/dashboard/audit", icon: "📋", soon: true },
   ];
 
