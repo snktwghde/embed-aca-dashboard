@@ -68,10 +68,12 @@ function formatDate(iso) {
   });
 }
 
-export default function RuleForm({ initialRule = null }) {
+export default function RuleForm({ initialRule = null, prefillBanner = null }) {
   const router = useRouter();
   const supabase = createClient();
-  const isEdit = initialRule !== null;
+  // Edit mode requires an existing id. A prefilled initialRule from a pattern
+  // has no id and must be treated as create mode.
+  const isEdit = initialRule !== null && initialRule.id !== undefined;
 
   const [ruleName, setRuleName] = useState(initialRule?.rule_name || "");
   const [ruleType, setRuleType] = useState(initialRule?.rule_type || "auto_approve");
@@ -275,6 +277,8 @@ export default function RuleForm({ initialRule = null }) {
             : "Rules run before the AI in priority order. The first matching rule decides the invoice."}
         </p>
       </div>
+
+      {prefillBanner && <div className="mb-6">{prefillBanner}</div>}
 
       {error && (
         <div className="mb-6 px-4 py-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-800">

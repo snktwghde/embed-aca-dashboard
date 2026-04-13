@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase-browser";
 
 // ---------- helpers ----------
@@ -28,7 +29,6 @@ const formatPercent = (num) => {
   return `${Number(num).toFixed(0)}%`;
 };
 
-// For values stored as 0-1 ratios (e.g. vendor_scores.dispute_rate)
 const formatRatio = (num) => {
   if (num === null || num === undefined) return "—";
   return `${(Number(num) * 100).toFixed(0)}%`;
@@ -57,6 +57,52 @@ const statusTone = (status) => {
 
 const stoneTone = "border-stone-200 bg-stone-50 text-stone-600";
 
+// Mirrors server.js bucketToAmountRange — must stay in sync with backend.
+const bucketToAmountRange = (bucket) => {
+  const ranges = {
+    under_10k: { max_amount: 10000 },
+    "10k_50k": { min_amount: 10000, max_amount: 50000 },
+    "50k_100k": { min_amount: 50000, max_amount: 100000 },
+    "100k_500k": { min_amount: 100000, max_amount: 500000 },
+    over_500k: { min_amount: 500000 },
+  };
+  return ranges[bucket] || {};
+};
+
+/**
+ * Returns true if an active rule for this vendor already covers the
+ * amount bucket this pattern represents. Used to hide the "Convert to
+ * rule" button when the operator has already converted the pattern (or
+ * manually created an equivalent rule).
+ *
+ * "Covers" means: same vendor AND the rule's amount range overlaps the
+ * pattern's bucket. A widened rule (min=5000, max=100000) still counts
+ * as covering a 10k_50k pattern.
+ */
+const patternIsAlreadyCovered = (pattern, rules) => {
+  const bucket = bucketToAmountRange(pattern.amount_bucket);
+  const patternMin = bucket.min_amount ?? 0;
+  const patternMax = bucket.max_amount ?? Number.POSITIVE_INFINITY;
+
+  return rules.some((r) => {
+    const c = r.conditions || {};
+    if (!c.vendor || c.vendor.toLowerCase() !== pattern.vendor_name.toLowerCase()) {
+      return false;
+    }
+    const ruleMin = c.min_amount ?? 0;
+    const ruleMax = c.max_amount ?? Number.POSITIVE_INFINITY;
+    // Ranges overlap if ruleMin <= patternMax AND ruleMax >= patternMin
+    return ruleMin <= patternMax && ruleMax >= patternMin;
+  });
+};
+
+// Mirrors backend thresholds from generateRuleSuggestions in server.js.
+// If these are ever relaxed or tightened on the backend, update here too.
+const PATTERN_QUALIFIES_FOR_CONVERSION = (p) =>
+  (p.decision || "").toLowerCase() === "approved" &&
+  Number(p.occurrence_count) >= 3 &&
+  Number(p.confidence) >= 0.85;
+
 // ---------- page ----------
 export default function VendorDetailPage() {
   const router = useRouter();
@@ -67,6 +113,7 @@ export default function VendorDetailPage() {
   const [vendor, setVendor] = useState(null);
   const [invoices, setInvoices] = useState([]);
   const [approvers, setApprovers] = useState([]);
+  const [existingRules, setExistingRules] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -111,7 +158,9 @@ export default function VendorDetailPage() {
         try {
           const { data: patternRows } = await supabase
             .from("approval_patterns")
-            .select("approver_email, amount_bucket, decision, occurrence_count, confidence, last_observed")
+            .select(
+              "id, approver_email, amount_bucket, decision, occurrence_count, confidence, last_observed, vendor_name"
+            )
             .eq("vendor_name", vendorRow.vendor_name)
             .order("occurrence_count", { ascending: false })
             .limit(10);
@@ -119,6 +168,18 @@ export default function VendorDetailPage() {
         } catch (pErr) {
           console.warn("Approval patterns fetch failed:", pErr);
           setApprovers([]);
+        }
+
+        // 4. Active rules for this vendor (to dedupe convert-to-rule button)
+        try {
+          const { data: ruleRows } = await supabase
+            .from("tenant_rules")
+            .select("conditions")
+            .eq("is_active", true);
+          setExistingRules(ruleRows || []);
+        } catch (rErr) {
+          console.warn("Rules fetch failed:", rErr);
+          setExistingRules([]);
         }
       } catch (err) {
         console.error("Vendor detail fetch failed:", err);
@@ -236,14 +297,19 @@ export default function VendorDetailPage() {
                   <th className="text-right px-4 py-2.5 text-[11px] uppercase tracking-wider text-stone-500 font-medium">Occurrences</th>
                   <th className="text-right px-4 py-2.5 text-[11px] uppercase tracking-wider text-stone-500 font-medium">Confidence</th>
                   <th className="text-right px-4 py-2.5 text-[11px] uppercase tracking-wider text-stone-500 font-medium">Last Seen</th>
+                  <th className="text-right px-4 py-2.5 text-[11px] uppercase tracking-wider text-stone-500 font-medium w-40"></th>
                 </tr>
               </thead>
               <tbody>
-                {approvers.map((p, i) => {
+                {approvers.map((p) => {
                   const tone = statusTone(p.decision);
                   const cls = tone === "stone" ? stoneTone : toneClasses[tone];
+                  const qualifies = PATTERN_QUALIFIES_FOR_CONVERSION(p);
+                  const covered = qualifies && patternIsAlreadyCovered(p, existingRules);
+                  const showConvert = qualifies && !covered;
+
                   return (
-                    <tr key={i} className="border-b border-stone-100 last:border-0">
+                    <tr key={p.id} className="border-b border-stone-100 last:border-0">
                       <td className="px-4 py-3 text-sm text-stone-700">{p.approver_email}</td>
                       <td className="px-4 py-3 text-xs text-stone-600 font-mono">{p.amount_bucket}</td>
                       <td className="px-4 py-3">
@@ -254,6 +320,20 @@ export default function VendorDetailPage() {
                       <td className="px-4 py-3 text-right text-sm font-mono text-stone-700">{p.occurrence_count}</td>
                       <td className="px-4 py-3 text-right text-sm font-mono text-stone-700">{formatPercent(Number(p.confidence) * 100)}</td>
                       <td className="px-4 py-3 text-right text-xs text-stone-500">{formatDate(p.last_observed)}</td>
+                      <td className="px-4 py-3 text-right">
+                        {showConvert ? (
+                          <Link
+                            href={`/dashboard/rules/new?from_pattern=${p.id}`}
+                            className="text-xs font-medium text-stone-600 hover:text-stone-900 whitespace-nowrap"
+                          >
+                            Convert to rule →
+                          </Link>
+                        ) : covered ? (
+                          <span className="text-[10px] uppercase tracking-wider text-stone-400">
+                            Rule exists
+                          </span>
+                        ) : null}
+                      </td>
                     </tr>
                   );
                 })}
