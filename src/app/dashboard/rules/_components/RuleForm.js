@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase-browser";
 
@@ -37,10 +37,6 @@ function buildConditions(c) {
   return out;
 }
 
-/**
- * Reverse of buildConditions: takes a stored conditions JSONB and returns
- * the form state with the right enabled flags set.
- */
 function conditionsToFormState(conditions) {
   const c = conditions || {};
   return {
@@ -70,9 +66,11 @@ function formatDate(iso) {
 
 export default function RuleForm({ initialRule = null, prefillBanner = null }) {
   const router = useRouter();
-  const supabase = createClient();
-  // Edit mode requires an existing id. A prefilled initialRule from a pattern
-  // has no id and must be treated as create mode.
+  // Memoized once per mount — prevents re-creating client on every render.
+  const supabase = useMemo(() => createClient(), []);
+
+  // Robust isEdit: explicit null check AND presence of id. Prevents a partial
+  // prefill object (from a future entry point) from accidentally triggering UPDATE.
   const isEdit = initialRule !== null && initialRule.id !== undefined;
 
   const [ruleName, setRuleName] = useState(initialRule?.rule_name || "");
@@ -94,9 +92,29 @@ export default function RuleForm({ initialRule = null, prefillBanner = null }) {
   const [fieldErrors, setFieldErrors] = useState({});
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
+  // Refs for focus management on modal open
+  const deleteModalCancelRef = useRef(null);
+
   function updateCondition(field, value) {
     setConditions((prev) => ({ ...prev, [field]: value }));
   }
+
+  // Inline min/max cross-field validation (UX-RF-001).
+  // Surfaces the error the moment both fields are filled, not only at save.
+  const liveMinMaxError = useMemo(() => {
+    if (!conditions.min_amount_enabled || !conditions.max_amount_enabled) return null;
+    if (conditions.min_amount === "" || conditions.max_amount === "") return null;
+    const minV = Number(conditions.min_amount);
+    const maxV = Number(conditions.max_amount);
+    if (isNaN(minV) || isNaN(maxV)) return null;
+    if (minV >= maxV) return "Must be greater than min amount";
+    return null;
+  }, [
+    conditions.min_amount_enabled,
+    conditions.max_amount_enabled,
+    conditions.min_amount,
+    conditions.max_amount,
+  ]);
 
   function validate() {
     const errs = {};
@@ -120,7 +138,6 @@ export default function RuleForm({ initialRule = null, prefillBanner = null }) {
       errs.ruleType = "Invalid type";
     }
 
-    // Conditions validation
     const built = buildConditions(conditions);
     const conditionCount = Object.keys(built).length;
 
@@ -179,6 +196,7 @@ export default function RuleForm({ initialRule = null, prefillBanner = null }) {
 
   async function handleSave(e) {
     e.preventDefault();
+    if (saving) return; // Double-submit guard
     setError(null);
     setFieldErrors({});
 
@@ -191,26 +209,9 @@ export default function RuleForm({ initialRule = null, prefillBanner = null }) {
 
     setSaving(true);
 
-    const payload = {
-      rule_name: ruleName.trim(),
-      rule_type: ruleType,
-      action,
-      priority: Number(priority),
-      is_active: isActive,
-      conditions: buildConditions(conditions),
-      updated_at: new Date().toISOString(),
-    };
-
-    let result;
-    if (isEdit) {
-      result = await supabase
-        .from("tenant_rules")
-        .update(payload)
-        .eq("id", initialRule.id);
-    } else {
-      // tenant_id is filled by RLS WITH CHECK from the JWT — we don't send it.
-      // BUT: the column is NOT NULL, so we need to set it. Read it from the
-      // session. RLS will reject any mismatch.
+    try {
+      // Tenant id pulled from JWT app_metadata. Used as INSERT payload and
+      // as UPDATE/DELETE scope (defense-in-depth; RLS is the real gate).
       const {
         data: { user },
       } = await supabase.auth.getUser();
@@ -218,45 +219,100 @@ export default function RuleForm({ initialRule = null, prefillBanner = null }) {
 
       if (!tenantId) {
         setError("Could not determine tenant from session. Try signing out and back in.");
-        setSaving(false);
         return;
       }
 
-      result = await supabase.from("tenant_rules").insert({
-        ...payload,
-        tenant_id: tenantId,
-      });
-    }
+      const payload = {
+        rule_name: ruleName.trim(),
+        rule_type: ruleType,
+        action,
+        priority: Number(priority),
+        is_active: isActive,
+        conditions: buildConditions(conditions),
+        updated_at: new Date().toISOString(),
+      };
 
-    if (result.error) {
-      setError(`Save failed: ${result.error.message}`);
+      let result;
+      if (isEdit) {
+        result = await supabase
+          .from("tenant_rules")
+          .update(payload)
+          .eq("id", initialRule.id)
+          .eq("tenant_id", tenantId);
+      } else {
+        result = await supabase.from("tenant_rules").insert({
+          ...payload,
+          tenant_id: tenantId,
+        });
+      }
+
+      if (result.error) {
+        setError(`Save failed: ${result.error.message}`);
+        return;
+      }
+
+      router.push("/dashboard/rules");
+    } catch (err) {
+      setError(`Save failed: ${err.message || "Unknown error"}`);
+    } finally {
       setSaving(false);
-      return;
     }
-
-    router.push("/dashboard/rules");
-    router.refresh();
   }
 
   async function handleDelete() {
+    if (deleting) return; // Double-click guard
     setDeleting(true);
     setError(null);
 
-    const { error: delError } = await supabase
-      .from("tenant_rules")
-      .delete()
-      .eq("id", initialRule.id);
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      const tenantId = user?.app_metadata?.tenant_id;
 
-    if (delError) {
-      setError(`Delete failed: ${delError.message}`);
-      setDeleting(false);
+      if (!tenantId) {
+        setError("Could not determine tenant from session.");
+        setShowDeleteConfirm(false);
+        return;
+      }
+
+      const { error: delError } = await supabase
+        .from("tenant_rules")
+        .delete()
+        .eq("id", initialRule.id)
+        .eq("tenant_id", tenantId);
+
+      if (delError) {
+        setError(`Delete failed: ${delError.message}`);
+        setShowDeleteConfirm(false);
+        return;
+      }
+
+      router.push("/dashboard/rules");
+    } catch (err) {
+      setError(`Delete failed: ${err.message || "Unknown error"}`);
       setShowDeleteConfirm(false);
-      return;
+    } finally {
+      setDeleting(false);
     }
-
-    router.push("/dashboard/rules");
-    router.refresh();
   }
+
+  // Focus the Cancel button when delete modal opens (accessibility).
+  useEffect(() => {
+    if (showDeleteConfirm && deleteModalCancelRef.current) {
+      deleteModalCancelRef.current.focus();
+    }
+  }, [showDeleteConfirm]);
+
+  // Esc closes delete modal
+  useEffect(() => {
+    if (!showDeleteConfirm) return;
+    const onKey = (e) => {
+      if (e.key === "Escape" && !deleting) setShowDeleteConfirm(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showDeleteConfirm, deleting]);
 
   return (
     <div className="px-8 py-8 max-w-3xl mx-auto">
@@ -278,6 +334,7 @@ export default function RuleForm({ initialRule = null, prefillBanner = null }) {
         </p>
       </div>
 
+      {/* Prefill banner (from Convert Pattern to Rule flow) */}
       {prefillBanner && <div className="mb-6">{prefillBanner}</div>}
 
       {error && (
@@ -294,29 +351,41 @@ export default function RuleForm({ initialRule = null, prefillBanner = null }) {
           </h2>
 
           <div>
-            <label className="block text-sm font-medium text-stone-700 mb-1.5">
+            <label
+              htmlFor="rule-name"
+              className="block text-sm font-medium text-stone-700 mb-1.5"
+            >
               Rule name
             </label>
             <input
+              id="rule-name"
               type="text"
               value={ruleName}
               onChange={(e) => setRuleName(e.target.value)}
               placeholder="e.g. Auto-approve trusted small invoices"
+              aria-invalid={!!fieldErrors.ruleName}
+              aria-describedby={fieldErrors.ruleName ? "rule-name-error" : undefined}
               className={`w-full px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-stone-900 ${
                 fieldErrors.ruleName ? "border-red-300" : "border-stone-300"
               }`}
             />
             {fieldErrors.ruleName && (
-              <p className="mt-1 text-xs text-red-600">{fieldErrors.ruleName}</p>
+              <p id="rule-name-error" className="mt-1 text-xs text-red-600">
+                {fieldErrors.ruleName}
+              </p>
             )}
           </div>
 
           <div className="grid grid-cols-2 gap-5">
             <div>
-              <label className="block text-sm font-medium text-stone-700 mb-1.5">
+              <label
+                htmlFor="rule-type"
+                className="block text-sm font-medium text-stone-700 mb-1.5"
+              >
                 Rule type
               </label>
               <select
+                id="rule-type"
                 value={ruleType}
                 onChange={(e) => setRuleType(e.target.value)}
                 className="w-full px-3 py-2 border border-stone-300 rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-stone-900"
@@ -333,15 +402,21 @@ export default function RuleForm({ initialRule = null, prefillBanner = null }) {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-stone-700 mb-1.5">
+              <label
+                htmlFor="rule-priority"
+                className="block text-sm font-medium text-stone-700 mb-1.5"
+              >
                 Priority
               </label>
               <input
+                id="rule-priority"
                 type="number"
                 value={priority}
                 onChange={(e) => setPriority(e.target.value)}
                 min="1"
                 max="999"
+                aria-invalid={!!fieldErrors.priority}
+                aria-describedby={fieldErrors.priority ? "rule-priority-error" : undefined}
                 className={`w-full px-3 py-2 border rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-stone-900 ${
                   fieldErrors.priority ? "border-red-300" : "border-stone-300"
                 }`}
@@ -350,20 +425,31 @@ export default function RuleForm({ initialRule = null, prefillBanner = null }) {
                 Lower runs first (1 = highest)
               </p>
               {fieldErrors.priority && (
-                <p className="mt-1 text-xs text-red-600">{fieldErrors.priority}</p>
+                <p id="rule-priority-error" className="mt-1 text-xs text-red-600">
+                  {fieldErrors.priority}
+                </p>
               )}
             </div>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-stone-700 mb-1.5">
+            <div
+              className="block text-sm font-medium text-stone-700 mb-1.5"
+              id="action-group-label"
+            >
               Action when matched
-            </label>
-            <div className="grid grid-cols-3 gap-2">
+            </div>
+            <div
+              role="radiogroup"
+              aria-labelledby="action-group-label"
+              className="grid grid-cols-3 gap-2"
+            >
               {ACTIONS.map((a) => (
                 <button
                   key={a.value}
                   type="button"
+                  role="radio"
+                  aria-checked={action === a.value}
                   onClick={() => setAction(a.value)}
                   className={`px-3 py-2 text-sm font-medium border rounded-md transition-colors ${
                     action === a.value
@@ -451,12 +537,17 @@ export default function RuleForm({ initialRule = null, prefillBanner = null }) {
               min="0"
               placeholder="50000"
               className={`w-full px-3 py-1.5 border rounded-md text-sm font-mono disabled:bg-stone-50 disabled:text-stone-400 ${
-                fieldErrors.max_amount ? "border-red-300" : "border-stone-300"
+                fieldErrors.max_amount || liveMinMaxError
+                  ? "border-red-300"
+                  : "border-stone-300"
               }`}
             />
-            {fieldErrors.max_amount && (
+            {/* Show server-side validation error first, fall back to live inline error */}
+            {fieldErrors.max_amount ? (
               <p className="mt-1 text-xs text-red-600">{fieldErrors.max_amount}</p>
-            )}
+            ) : liveMinMaxError ? (
+              <p className="mt-1 text-xs text-red-600">{liveMinMaxError}</p>
+            ) : null}
           </ConditionRow>
 
           <ConditionRow
@@ -577,19 +668,25 @@ export default function RuleForm({ initialRule = null, prefillBanner = null }) {
 
       {/* Delete confirmation modal */}
       {showDeleteConfirm && (
-        <div className="fixed inset-0 bg-stone-900/50 flex items-center justify-center z-50 px-4">
+        <div
+          className="fixed inset-0 bg-stone-900/50 flex items-center justify-center z-50 px-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-modal-title"
+        >
           <div className="bg-white rounded-lg max-w-md w-full p-6">
-            <h3 className="text-lg font-semibold text-stone-900 mb-2">
+            <h3 id="delete-modal-title" className="text-lg font-semibold text-stone-900 mb-2">
               Delete this rule?
             </h3>
             <p className="text-sm text-stone-600 mb-6">
-              <span className="font-medium text-stone-900">{initialRule.rule_name}</span>{" "}
+              <span className="font-medium text-stone-900">{initialRule?.rule_name}</span>{" "}
               will be permanently deleted. This cannot be undone. Future invoices that
               would have matched this rule will fall through to the AI instead.
             </p>
             <div className="flex justify-end gap-3">
               <button
                 type="button"
+                ref={deleteModalCancelRef}
                 onClick={() => setShowDeleteConfirm(false)}
                 disabled={deleting}
                 className="px-4 py-2 text-sm font-medium text-stone-700 hover:text-stone-900 disabled:opacity-50"

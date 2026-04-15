@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase-browser";
 
@@ -142,7 +142,9 @@ export default function RulesListPage() {
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
 
-  const supabase = createClient();
+  // Memoized once per mount — prevents re-creating client on every render,
+  // which would invalidate the useCallback identity and loop the effect.
+  const supabase = useMemo(() => createClient(), []);
 
   const fetchRules = useCallback(async () => {
     setLoading(true);
@@ -174,7 +176,10 @@ export default function RulesListPage() {
   }, [fetchRules]);
 
   async function handleToggleActive(rule) {
+    if (togglingId) return; // Guard against double-click while a toggle is in flight
     setTogglingId(rule.id);
+    setError(null); // Clear any prior toggle error so retries look clean
+
     const next = !rule.is_active;
 
     // Optimistic update
@@ -182,20 +187,42 @@ export default function RulesListPage() {
       prev.map((r) => (r.id === rule.id ? { ...r, is_active: next } : r))
     );
 
-    const { error: updateError } = await supabase
-      .from("tenant_rules")
-      .update({ is_active: next, updated_at: new Date().toISOString() })
-      .eq("id", rule.id);
+    try {
+      // Pull tenant from JWT for defense-in-depth scoping.
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      const tenantId = user?.app_metadata?.tenant_id;
 
-    if (updateError) {
-      // Roll back
+      if (!tenantId) {
+        // Roll back optimistic update
+        setRules((prev) =>
+          prev.map((r) => (r.id === rule.id ? { ...r, is_active: !next } : r))
+        );
+        setError("Could not determine tenant from session. Try signing out and back in.");
+        return;
+      }
+
+      const { error: updateError } = await supabase
+        .from("tenant_rules")
+        .update({ is_active: next, updated_at: new Date().toISOString() })
+        .eq("id", rule.id)
+        .eq("tenant_id", tenantId);
+
+      if (updateError) {
+        setRules((prev) =>
+          prev.map((r) => (r.id === rule.id ? { ...r, is_active: !next } : r))
+        );
+        setError(`Failed to ${next ? "activate" : "deactivate"} rule: ${updateError.message}`);
+      }
+    } catch (err) {
       setRules((prev) =>
         prev.map((r) => (r.id === rule.id ? { ...r, is_active: !next } : r))
       );
-      setError(`Failed to ${next ? "activate" : "deactivate"} rule: ${updateError.message}`);
+      setError(`Toggle failed: ${err.message || "Unknown error"}`);
+    } finally {
+      setTogglingId(null);
     }
-
-    setTogglingId(null);
   }
 
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
@@ -356,10 +383,12 @@ export default function RulesListPage() {
                       <button
                         onClick={() => handleToggleActive(rule)}
                         disabled={togglingId === rule.id}
+                        role="switch"
+                        aria-checked={rule.is_active}
+                        aria-label={`${rule.is_active ? "Deactivate" : "Activate"} rule ${rule.rule_name}`}
                         className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
                           rule.is_active ? "bg-emerald-600" : "bg-stone-300"
                         } ${togglingId === rule.id ? "opacity-50 cursor-wait" : "cursor-pointer"}`}
-                        aria-label={rule.is_active ? "Deactivate rule" : "Activate rule"}
                       >
                         <span
                           className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase-browser";
@@ -75,23 +75,32 @@ const bucketToAmountRange = (bucket) => {
  * rule" button when the operator has already converted the pattern (or
  * manually created an equivalent rule).
  *
- * "Covers" means: same vendor AND the rule's amount range overlaps the
- * pattern's bucket. A widened rule (min=5000, max=100000) still counts
- * as covering a 10k_50k pattern.
+ * "Covers" means: same vendor (exact match) AND the rule's amount range
+ * overlaps the pattern's bucket. A widened rule (min=5000, max=100000)
+ * still counts as covering a 10k_50k pattern.
+ *
+ * KNOWN GAP — rule shadowing via is_known_vendor:
+ * A broad "approve all known vendors under ₹50K" rule (is_known_vendor=true,
+ * no vendor field) will fire for this vendor but is NOT caught by this dedup
+ * check because we require an exact vendor match. Operators can therefore
+ * create a vendor-specific rule that is already shadowed by a broader rule.
+ * Full rule-shadowing detection belongs in Task 6 (System Intelligence),
+ * where it can surface as "Rule A shadows Rule B" relationships rather than
+ * as an ad-hoc check inside the vendor detail page.
  */
 const patternIsAlreadyCovered = (pattern, rules) => {
   const bucket = bucketToAmountRange(pattern.amount_bucket);
   const patternMin = bucket.min_amount ?? 0;
   const patternMax = bucket.max_amount ?? Number.POSITIVE_INFINITY;
+  const patternVendor = (pattern.vendor_name || "").toLowerCase();
 
   return rules.some((r) => {
     const c = r.conditions || {};
-    if (!c.vendor || c.vendor.toLowerCase() !== pattern.vendor_name.toLowerCase()) {
-      return false;
-    }
+    // Defensive: vendor must be a string before .toLowerCase()
+    if (typeof c.vendor !== "string") return false;
+    if (c.vendor.toLowerCase() !== patternVendor) return false;
     const ruleMin = c.min_amount ?? 0;
     const ruleMax = c.max_amount ?? Number.POSITIVE_INFINITY;
-    // Ranges overlap if ruleMin <= patternMax AND ruleMax >= patternMin
     return ruleMin <= patternMax && ruleMax >= patternMin;
   });
 };
@@ -108,7 +117,7 @@ export default function VendorDetailPage() {
   const router = useRouter();
   const params = useParams();
   const vendorId = params?.id;
-  const supabase = createClient();
+  const supabase = useMemo(() => createClient(), []);
 
   const [vendor, setVendor] = useState(null);
   const [invoices, setInvoices] = useState([]);
@@ -170,12 +179,15 @@ export default function VendorDetailPage() {
           setApprovers([]);
         }
 
-        // 4. Active rules for this vendor (to dedupe convert-to-rule button)
+        // 4. Active rules for this vendor (to dedupe convert-to-rule button).
+        // Limit is a soft cap — a tenant with 200+ active rules is already in
+        // "needs System Intelligence page" territory, so 200 is more than enough.
         try {
           const { data: ruleRows } = await supabase
             .from("tenant_rules")
             .select("conditions")
-            .eq("is_active", true);
+            .eq("is_active", true)
+            .limit(200);
           setExistingRules(ruleRows || []);
         } catch (rErr) {
           console.warn("Rules fetch failed:", rErr);
@@ -190,7 +202,7 @@ export default function VendorDetailPage() {
     };
 
     fetchAll();
-  }, [vendorId]);
+  }, [vendorId, supabase]);
 
   if (loading) {
     return (
@@ -324,6 +336,7 @@ export default function VendorDetailPage() {
                         {showConvert ? (
                           <Link
                             href={`/dashboard/rules/new?from_pattern=${p.id}`}
+                            aria-label={`Convert approval pattern for ${p.vendor_name} ${p.amount_bucket} to a rule`}
                             className="text-xs font-medium text-stone-600 hover:text-stone-900 whitespace-nowrap"
                           >
                             Convert to rule →

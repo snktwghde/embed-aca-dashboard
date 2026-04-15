@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase-browser";
 import RuleForm from "../../_components/RuleForm";
@@ -8,7 +8,7 @@ import RuleForm from "../../_components/RuleForm";
 export default function EditRulePage() {
   const params = useParams();
   const router = useRouter();
-  const supabase = createClient();
+  const supabase = useMemo(() => createClient(), []);
 
   const [rule, setRule] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -16,20 +16,41 @@ export default function EditRulePage() {
 
   useEffect(() => {
     async function fetchRule() {
-      const { data, error: fetchError } = await supabase
-        .from("tenant_rules")
-        .select("*")
-        .eq("id", params.id)
-        .single();
+      try {
+        // Pull tenant from JWT for defense-in-depth scoping.
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        const tenantId = user?.app_metadata?.tenant_id;
 
-      if (fetchError) {
-        setError(fetchError.message);
+        if (!tenantId) {
+          setError("Could not determine tenant from session. Try signing out and back in.");
+          setLoading(false);
+          return;
+        }
+
+        const { data, error: fetchError } = await supabase
+          .from("tenant_rules")
+          .select("*")
+          .eq("id", params.id)
+          .eq("tenant_id", tenantId)
+          .single();
+
+        // PGRST116 = "no rows returned" from .single().
+        // 22P02 = invalid text representation (e.g. malformed UUID in URL).
+        // Both get translated to a human message rather than raw PostgREST output.
+        if (fetchError?.code === "PGRST116" || fetchError?.code === "22P02") {
+          setError("Rule not found or you don't have access.");
+        } else if (fetchError) {
+          setError(fetchError.message);
+        } else {
+          setRule(data);
+        }
+      } catch (err) {
+        setError(`Failed to load rule: ${err.message || "Unknown error"}`);
+      } finally {
         setLoading(false);
-        return;
       }
-
-      setRule(data);
-      setLoading(false);
     }
 
     fetchRule();
